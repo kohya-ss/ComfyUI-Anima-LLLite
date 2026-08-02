@@ -12,6 +12,34 @@ This is intended as a **minimal reference implementation**. Community nodes
 with extra features (per-step scheduling, multi-cond, region masks, per-block
 selection, …) are welcome and can build on this codebase.
 
+## ⚠️ Breaking change: node renamed to `AnimaLLLiteApply_sdscripts`
+
+ComfyUI core has added its own (beta) Anima LLLite node named
+`AnimaLLLiteApply` (in `comfy_extras/nodes_model_patch.py`). ComfyUI silently
+skips custom-node registrations whose node ID collides with a built-in one,
+so this node's original ID `AnimaLLLiteApply` stopped loading. The node has
+therefore been renamed:
+
+* Node ID: `AnimaLLLiteApply` → **`AnimaLLLiteApply_sdscripts`**
+* Display name: **"Apply Anima ControlNet-LLLite (sd-scripts)"**
+
+**Existing workflows saved with the old node need to be fixed manually:**
+the old node type now resolves to the built-in core node, which has a
+different input signature (it takes a `MODEL_PATCH` from `ModelPatchLoader`
+instead of loading the weights file directly, and has no `mask` /
+`preserve_wrapper` inputs), so old workflows will fail validation. Delete
+the old node, add **Apply Anima ControlNet-LLLite (sd-scripts)**, and
+rewire it. There is unfortunately no way to keep the old ID as an alias
+because the built-in node now owns it.
+
+Note that the core node is a native reimplementation of the **same v2
+weight format** this node loads (sd-scripts-trained checkpoints work with
+both). The main practical differences: the core node loads weights from
+`models/model_patches/` via `ModelPatchLoader` (this node reads from
+`models/controlnet/`), integrates through ComfyUI's attention/MLP patch
+hooks instead of a `model_function_wrapper`, and currently supports
+single-frame (T=1) latents only.
+
 ## Install
 
 Clone into `ComfyUI/custom_nodes/`:
@@ -25,7 +53,8 @@ Place LLLite weights (`.safetensors`) under `ComfyUI/models/controlnet/`.
 
 ## Node
 
-**Apply Anima ControlNet-LLLite** (`loaders` category)
+**Apply Anima ControlNet-LLLite (sd-scripts)** (`loaders` category, node ID
+`AnimaLLLiteApply_sdscripts`)
 
 | Input | Type | Notes |
 |---|---|---|
@@ -70,7 +99,7 @@ silently substituting an empty mask.
 
 ### Cascading multiple LLLite nodes
 
-Multiple **Apply Anima ControlNet-LLLite** nodes can be chained on the same
+Multiple **Apply Anima ControlNet-LLLite (sd-scripts)** nodes can be chained on the same
 `MODEL` to apply more than one LLLite at the same time (e.g. a pose LLLite
 and a depth LLLite, or several inpaint LLLites with different conditions).
 Just feed the output `MODEL` of one node into the `model` input of the next.

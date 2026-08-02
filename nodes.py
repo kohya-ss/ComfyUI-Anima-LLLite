@@ -119,7 +119,7 @@ def _build_inpaint_cond_image(rgb_pm1: torch.Tensor, mask01: torch.Tensor,
     return torch.cat([rgb_pm1, mask_pm1], dim=1)
 
 
-class AnimaLLLiteApply:
+class AnimaLLLiteApply_sdscripts:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -279,9 +279,9 @@ class AnimaLLLiteApply:
 
 
 NODE_CLASS_MAPPINGS = {
-    "AnimaLLLiteApply": AnimaLLLiteApply,
+    "AnimaLLLiteApply_sdscripts": AnimaLLLiteApply_sdscripts,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AnimaLLLiteApply": "Apply Anima ControlNet-LLLite",
+    "AnimaLLLiteApply_sdscripts": "Apply Anima ControlNet-LLLite (sd-scripts)",
 }
