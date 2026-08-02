@@ -60,21 +60,54 @@ Place LLLite weights (`.safetensors`) under `ComfyUI/models/controlnet/`.
 |---|---|---|
 | `model` | MODEL | Anima checkpoint |
 | `lllite_name` | filename | from `models/controlnet/` |
-| `image` | IMAGE | control image (any resolution; auto-resized to latent×8) |
 | `strength` | FLOAT | LLLite multiplier (default 1.0) |
 | `start_percent` | FLOAT | start of the active sampling window (0.0 = sigma_max) |
 | `end_percent` | FLOAT | end of the active sampling window (1.0 = sigma_min) |
 | `preserve_wrapper` | BOOLEAN | if a previous node already installed a `model_function_wrapper`, delegate to it from inside this node's wrapper so they cascade instead of overwriting (default `True`) |
-| `mask` *(optional)* | MASK | required when the weights are 4-channel (inpaint); white = inpaint area, black = keep |
+| `image` *(optional)* | IMAGE | control image (any resolution; auto-resized to the generation size). Required for pixel-stem (v2) weights; for latent-based weights (v2.1 / v3) connect it together with `vae`, or use `cond_latent` instead |
+| `mask` *(optional)* | MASK | required when the weights are 4-channel pixel (inpaint); white = inpaint area, black = keep |
+| `vae` *(optional)* | VAE | Qwen-Image VAE, used to encode `image` for latent-based weights (v2.1 / v3) |
+| `cond_latent` *(optional)* | LATENT | alternative control input for latent-based weights: a `VAEEncode`d latent (e.g. the same latent used as the img2img init). Must match the generation latent resolution; normalization is applied by the node |
 
 Output: patched `MODEL`.
 
 All architectural parameters (`cond_emb_dim`, `mlp_dim`, `cond_dim`,
 `cond_resblocks`, `use_aspp`, `aspp_dilations`, `target_layers`,
-`cond_in_channels`, `inpaint_masked_input`) are baked into the trained
-weights and read automatically from the safetensors metadata — they are
-not exposed as node inputs because changing them would just cause load
+`cond_in_channels`, `inpaint_masked_input`, `cond_input_space`, `trunk`,
+`ref_block`, `ref_timestep`, `ref_context`, `gate`) are baked into the
+trained weights and read automatically from the safetensors metadata — they
+are not exposed as node inputs because changing them would just cause load
 errors.
+
+### v3 (semantic trunk) weights
+
+Weights trained with sd-scripts' v3 architecture (`lllite.trunk = "semantic"`)
+are supported. For these, the conditioning source is not a conv stem but the
+**frozen DiT itself**: the control latent is run through the DiT once per
+generation (up to `max(ref_block)` blocks, with a fixed `ref_timestep`), and
+the tapped hidden states are fed to the semantic trunk. The per-step timestep
+embedding (t-FiLM) is captured via a forward hook on `dit.t_embedding_norm`
+that is installed/removed around each sampler call, and the per-token gate
+(`scalar` / `vector` / `none`) is applied inside each LLLite module exactly
+as in training.
+
+Notes / current limitations:
+
+* v3 weights need a **latent control input**: connect `image` + `vae`, or
+  `cond_latent`. For editing-style v3 weights, where the control image is the
+  same image you feed to img2img, you can branch a single `VAEEncode` output
+  into both the KSampler `latent_image` and this node's `cond_latent`.
+* `ref_context` **`zero` and `uncond`** are supported. `caption` weights are
+  rejected (they need per-CFG-branch reference features; not implemented yet).
+* The reference forward result (`h_ref`) is timestep-invariant and is computed
+  once per resolution, then cached for the rest of sampling.
+* v3 inpainting and gate-map dumping are not supported.
+* Multi-`ref_block` (dual/multi concat trunk, e.g. `ref_block = "2,13"`) is
+  supported.
+
+The ComfyUI-core beta node (`AnimaLLLiteApply`) only loads v2 weights and
+rejects v3 files, so there is no risk of the two implementations picking up
+each other's checkpoints.
 
 ### Inpainting (4-channel) weights
 
@@ -124,6 +157,12 @@ Notes when cascading:
 * The pattern is compatible with other well-behaved wrapper-installing
   nodes (e.g. `ChromaRadianceOptions`) provided they follow the same
   delegate-to-previous-wrapper convention.
+* Caveat when cascading **v3 (semantic trunk)** weights: wrappers nest, so an
+  earlier-added node's reference forward runs while a later-added node's
+  patches are already applied — the later LLLite's control then leaks into the
+  earlier one's reference features (training never sees this). Single v3 +
+  any number of v2 nodes is unaffected in the common case where the v3 node
+  is added last; treat multi-v3 cascades as experimental.
 
 ## How it works
 
@@ -168,7 +207,7 @@ lllite_dit_blocks_{i}_self_attn_q_proj.depth_embed
 
 The expected safetensors metadata keys are:
 
-* `lllite.version` (= `"2"`)
+* `lllite.version` (`"2"` / `"3"`)
 * `lllite.cond_emb_dim`, `lllite.mlp_dim`
 * `lllite.cond_dim`, `lllite.cond_resblocks`
 * `lllite.use_aspp`, `lllite.aspp_dilations`
@@ -177,6 +216,16 @@ The expected safetensors metadata keys are:
 * `lllite.cond_in_channels` (`"3"` standard / `"4"` inpaint; defaults to `3`)
 * `lllite.inpaint_masked_input` (`"true"` / `"false"`; defaults to `false`,
   only meaningful when `cond_in_channels=4`)
+* `lllite.cond_input_space` (`"pixel"` / `"latent"`; defaults to `pixel`)
+* v3 only: `lllite.trunk` (`"semantic"`), `lllite.ref_block` (e.g. `"13"` or
+  `"2,13"`), `lllite.ref_timestep`, `lllite.ref_context` (`"zero"` /
+  `"uncond"`), `lllite.gate` (`"scalar"` / `"vector"` / `"none"`)
+
+For v3, the semantic-trunk keys replace the conv stem
+(`lllite_conditioning1.{ln_in,proj_in,t_proj,...}`) and each module gains a
+`.gate.{weight,bias}` pair (except `gate="none"`). Loading mismatched weights
+(stem vs semantic, pixel vs latent, wrong gate mode, wrong ref-block count) is
+detected from the state-dict shapes and rejected with an explicit error.
 
 **Legacy weights with `lllite_modules.{i}.*` keys (the pre-v2 format) are
 rejected on load.** Re-train against the current sd-scripts codebase.
